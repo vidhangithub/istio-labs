@@ -1,0 +1,94 @@
+# What Istio secretly adds to every pod:
+initContainers:
+  - name: istio-init        # Sets up iptables to intercept ALL traffic
+    image: istio/proxyv2
+
+containers:
+  - name: istio-proxy       # The Envoy sidecar - handles all traffic
+    image: istio/proxyv2
+```
+
+Your app container never changes. Magic. ✨
+
+---
+
+## Topic 3 — Your First Mesh Application
+
+We'll deploy **Istio's built-in demo app called Bookinfo**. It's a perfect learning app because it has
+ **4 microservices in different languages** all talking to each other:
+```
+                    ┌─────────────┐
+         User ─────►│ productpage │  (Python)
+                    └──────┬──────┘
+                           │
+               ┌───────────┼───────────┐
+               ▼           ▼           ▼
+           ┌───────┐  ┌─────────┐  ┌────────┐
+           │details│  │ reviews │  │ratings │
+           │(Ruby) │  │  (Java) │  │ (Node) │
+           └───────┘  └─────────┘  └────────┘
+                           │
+                    3 versions of reviews:
+                    v1 - no stars
+                    v2 - black stars
+                    v3 - red stars
+
+#port forward 
+kubectl port-forward svc/productpage 9080:9080
+
+#Check Envoy now knows about subsets 
+istioctl proxy-config cluster deploy/productpage-v1 | grep reviews
+
+# Check response difference - count lines (v3 has more content due to star ratings)
+kubectl exec -it $(kubectl get pod -l app=ratings -o jsonpath='{.items[0].metadata.name}') \
+  -c ratings -- curl -s productpage:9080/productpage | wc -l
+
+kubectl exec -it $(kubectl get pod -l app=ratings -o jsonpath='{.items[0].metadata.name}') \
+  -c ratings -- curl -s -H "end-user: vidhan" productpage:9080/productpage | wc -l
+```
+
+The second command (with header) should return **more lines** than the first — because v3 renders star rating HTML that v1 doesn't.
+
+---
+
+## What you've proven so far in Practical 3 ✅
+```
+Anonymous request  ──────────────────────────► reviews-v1 (no stars) ✅
+Request with end-user: vidhan header ─────────► reviews-v3 (red stars) ✅
+
+# Use wget instead - Python containers usually have it
+time kubectl exec -it $(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}') \
+  -c productpage -- wget -q -O /dev/null -S ratings:9080/ratings/1 2>&1 | grep "HTTP/"
+
+# Or use python to make the request
+time kubectl exec -it $(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}') \
+  -c productpage -- python3 -c "
+import urllib.request
+try:
+    r = urllib.request.urlopen('http://ratings:9080/ratings/1', timeout=10)
+    print('Status:', r.status)
+except Exception as e:
+    print('Error:', e)
+"
+
+Circuit Breaker
+The concept
+Named after electrical circuit breakers. In electronics, when current exceeds safe levels, 
+the breaker trips and cuts power — protecting the circuit. Same idea in software:
+
+Normal state (CLOSED circuit — traffic flows):
+productpage ──────────────────────► ratings ✅
+
+Ratings starts failing/slow:
+productpage ──────────────────────► ratings ❌❌❌
+
+Circuit OPENS (trips) after threshold:
+productpage ──X (instant fail)      ratings 🚫
+             ↓
+        returns error immediately
+        instead of waiting
+
+After cooldown period, circuit goes HALF-OPEN:
+productpage ──── 1 test request ───► ratings
+                 if succeeds → CLOSED again
+                 if fails → OPEN again
