@@ -92,3 +92,25 @@ After cooldown period, circuit goes HALF-OPEN:
 productpage ──── 1 test request ───► ratings
                  if succeeds → CLOSED again
                  if fails → OPEN again
+
+
+#Verify it landed in Envoy
+istioctl proxy-config cluster deploy/reviews-v2 --fqdn ratings.default.svc.cluster.local -o json | grep -A20 "outlierDetection\|circuitBreakers"
+
+# Deploy Fortio into the mesh
+kubectl apply -f ~/istio-1.29.0/samples/httpbin/sample-client/fortio-deploy.yaml
+
+# Wait for it to be ready (2/2 with sidecar)
+kubectl get pod -l app=fortio -w
+
+
+
+The demo profile in Istio 1.29.0 no longer bundles Kiali, Jaeger, 
+Prometheus and Grafana by default — they moved them to separate addon samples. Easy fix:
+# Install all observability addons at once
+kubectl apply -f ~/istio-1.29.0/samples/addons/
+
+# Wait for them all to come up
+kubectl get pods -n istio-system -w
+
+#3 way split traffic
